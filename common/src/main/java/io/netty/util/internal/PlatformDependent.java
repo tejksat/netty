@@ -16,6 +16,9 @@
 package io.netty.util.internal;
 
 import io.netty.util.CharsetUtil;
+import io.netty.util.internal.HashCodeGenerator.NativeTypeTranslator;
+import io.netty.util.internal.NativeTypeAccessor.AbstractNativeTypeAccessor;
+import io.netty.util.internal.NativeTypeAccessor.ByteArrayAccessorDelegator;
 import io.netty.util.internal.chmv8.ConcurrentHashMapV8;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
@@ -29,6 +32,7 @@ import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -57,6 +61,7 @@ public final class PlatformDependent {
     private static final Pattern MAX_DIRECT_MEMORY_SIZE_ARG_PATTERN = Pattern.compile(
             "\\s*-XX:MaxDirectMemorySize\\s*=\\s*([0-9]+)\\s*([kKmMgG]?)\\s*$");
 
+    private static final boolean BIG_ENDIAN = ByteOrder.nativeOrder() == ByteOrder.BIG_ENDIAN;
     private static final boolean IS_ANDROID = isAndroid0();
     private static final boolean IS_WINDOWS = isWindows0();
     private static volatile Boolean IS_ROOT;
@@ -80,6 +85,42 @@ public final class PlatformDependent {
     private static final int BIT_MODE = bitMode0();
 
     private static final int ADDRESS_SIZE = addressSize0();
+
+    private abstract static class Murmur3SafeAccessor extends AbstractNativeTypeAccessor {
+        @Override
+        public long byteArrayBaseOffset() {
+            return 0;
+        }
+
+        @Override
+        public byte getByte(byte[] data, int i) {
+            return data[i];
+        }
+    }
+    private static final NativeTypeAccessor SAFE_LITTLE_ENDIAN = new Murmur3SafeAccessor() {
+        @Override
+        public int getInt(byte[] data, long i) {
+            return safeGetIntLittleEndian(data, (int) i);
+        }
+
+        @Override
+        public boolean isLittleEndian() {
+            return true;
+        }
+    };
+    private static final NativeTypeAccessor SAFE_BIG_ENDIAN = new Murmur3SafeAccessor() {
+        @Override
+        public int getInt(byte[] data, long i) {
+            return safeGetIntBigEndian(data, (int) i);
+        }
+
+        @Override
+        public boolean isLittleEndian() {
+            return false;
+        }
+    };
+    private static final Murmur3 MURMUR3_SAFE_LITTLE_ENDIAN = new Murmur3(SAFE_LITTLE_ENDIAN);
+    private static final Murmur3 MURMUR3_SAFE_BIG_ENDIAN = new Murmur3(SAFE_BIG_ENDIAN);
 
     static {
         if (logger.isDebugEnabled()) {
@@ -317,6 +358,20 @@ public final class PlatformDependent {
         return PlatformDependent0.getLong(address);
     }
 
+    static int safeGetIntBigEndian(byte[] bytes, int startPos) {
+        return ((bytes[startPos] & 0xFF) << 24) |
+               ((bytes[startPos + 1] & 0xFF) << 16) |
+               ((bytes[startPos + 2] & 0xFF) << 8) |
+               (bytes[startPos + 3] & 0xFF);
+    }
+
+    static int safeGetIntLittleEndian(byte[] bytes, int startPos) {
+        return ((bytes[startPos + 3] & 0xFF) << 24) |
+               ((bytes[startPos + 2] & 0xFF) << 16) |
+               ((bytes[startPos + 1] & 0xFF) << 8) |
+               (bytes[startPos] & 0xFF);
+    }
+
     public static void putOrderedObject(Object object, long address, Object value) {
         PlatformDependent0.putOrderedObject(object, address, value);
     }
@@ -365,6 +420,63 @@ public final class PlatformDependent {
             return safeEquals(bytes1, startPos1, endPos1, bytes2, startPos2, endPos2);
         }
         return PlatformDependent0.equals(bytes1, startPos1, endPos1, bytes2, startPos2, endPos2);
+    }
+
+    /**
+     * Get the hash code for a byte array. For performance reasons no bounds checking on the
+     * parameters is performed.
+     * <p>
+     * Note that this result of this method is not necessarily the same as {@link java.util.Arrays#hashCode(byte[])}
+     * for performance reasons. However the same conditions hold. For any two {@code byte} arrays {@code a} and
+     * {@code b} such that {@code PlatformDependent.equals(a, A1, A2, b, B1, B2)}, it is also the case that
+     * {@code PlatformDependent.hashCode(a, A1, A2, X) == PlatformDependent.hashCode(b, B1, B2, X)}.
+     * @param bytes the byte array to generate the hash code for.
+     * @param seed The seed for the hash code generation algorithm.
+     */
+    public static int hashCode(byte[] bytes, int seed) {
+        return hashCode(bytes, 0, bytes.length, seed);
+    }
+
+    /**
+     * Get the hash code for a byte array. For performance reasons no bounds checking on the
+     * parameters is performed.
+     * <p>
+     * Note that this result of this method is not necessarily the same as {@link java.util.Arrays#hashCode(byte[])}
+     * for performance reasons. However the same conditions hold. For any two {@code byte} arrays {@code a} and
+     * {@code b} such that {@code PlatformDependent.equals(a, A1, A2, b, B1, B2)}, it is also the case that
+     * {@code PlatformDependent.hashCode(a, A1, A2, X) == PlatformDependent.hashCode(b, B1, B2, X)}.
+     * @param bytes the byte array to generate the hash code for.
+     * @param startPos the position (inclusive) to start generating the hash code for in {@code bytes}.
+     * @param endPos the position (exclusive) to stop generating the hash code for in {@code bytes}.
+     * @param seed The seed for the hash code generation algorithm.
+     */
+    public static int hashCode(byte[] bytes, int startPos, int endPos, int seed) {
+        if (!hasUnsafe() || !PlatformDependent0.unalignedAccess()) {
+            return safeHashCode(bytes, startPos, endPos, seed);
+        }
+        return PlatformDependent0.hashCode(bytes, startPos, endPos, seed);
+    }
+
+    /**
+     * Get access to the appropriate {@link HashCodeGenerator} for your system.
+     */
+    public static HashCodeGenerator hashCodeGenerator() {
+        if (!hasUnsafe() || !PlatformDependent0.unalignedAccess()) {
+            return BIG_ENDIAN ? MURMUR3_SAFE_BIG_ENDIAN : MURMUR3_SAFE_LITTLE_ENDIAN;
+        }
+        return PlatformDependent0.hashCodeGenerator();
+    }
+
+    /**
+     * Create a new {@link HashCodeGenerator} which uses a {@link NativeTypeTranslator} before using native types in
+     * the hash code algorithm.
+     */
+    public static HashCodeGenerator newHashCodeGenerator(NativeTypeTranslator translator) {
+        if (!hasUnsafe() || !PlatformDependent0.unalignedAccess()) {
+            return BIG_ENDIAN ? new Murmur3(new ByteArrayAccessorDelegator(SAFE_BIG_ENDIAN, translator)) :
+                                new Murmur3(new ByteArrayAccessorDelegator(SAFE_LITTLE_ENDIAN, translator));
+        }
+        return PlatformDependent0.newHashCodeGenerator(translator);
     }
 
     /**
@@ -863,12 +975,20 @@ public final class PlatformDependent {
         if (len1 != len2) {
             return false;
         }
-        for (int i = 0; i < len1; i++) {
-            if (bytes1[startPos1 + i] != bytes2[startPos2 + i]) {
+        final int end = startPos1 + len1;
+        for (int i = startPos1, j = startPos2; i < end; ++i, ++j) {
+            if (bytes1[i] != bytes2[j]) {
                 return false;
             }
         }
         return true;
+    }
+
+    static int safeHashCode(byte[] bytes, int startPos, int endPos, int seed) {
+        if (BIG_ENDIAN) {
+            return MURMUR3_SAFE_BIG_ENDIAN.hashCode(bytes, startPos, endPos - startPos, seed);
+        }
+        return MURMUR3_SAFE_LITTLE_ENDIAN.hashCode(bytes, startPos, endPos - startPos, seed);
     }
 
     private PlatformDependent() {

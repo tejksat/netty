@@ -7,6 +7,8 @@ EXAMPLE_MAP=(
   'factorial-client:io.netty.example.factorial.FactorialClient'
   'factorial-server:io.netty.example.factorial.FactorialServer'
   'file-server:io.netty.example.file.FileServer'
+  'hash-client:io.netty.example.hashcode.HashCodeClient'
+  'hash-server:io.netty.example.hashcode.HashCodeServer'
   'http-cors-server:io.netty.example.http.cors.HttpCorsServer'
   'http-file-server:io.netty.example.http.file.HttpStaticFileServer'
   'http-helloworld-server:io.netty.example.http.helloworld.HttpHelloWorldServer'

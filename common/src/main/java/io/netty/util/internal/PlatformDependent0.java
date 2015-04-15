@@ -15,9 +15,11 @@
  */
 package io.netty.util.internal;
 
+import io.netty.util.internal.HashCodeGenerator.NativeTypeTranslator;
+import io.netty.util.internal.NativeTypeAccessor.AbstractNativeTypeAccessor;
+import io.netty.util.internal.NativeTypeAccessor.ByteArrayAccessorDelegator;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
-import sun.misc.Unsafe;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -30,6 +32,8 @@ import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 
+import sun.misc.Unsafe;
+
 /**
  * The {@link PlatformDependent} operations which requires access to {@code sun.misc.*}.
  */
@@ -40,6 +44,24 @@ final class PlatformDependent0 {
     private static final boolean BIG_ENDIAN = ByteOrder.nativeOrder() == ByteOrder.BIG_ENDIAN;
     private static final long ADDRESS_FIELD_OFFSET;
     private static final long ARRAY_BASE_OFFSET;
+    private static final NativeTypeAccessor UNSAFE_ACCESSOR = new AbstractNativeTypeAccessor() {
+        @Override
+        public int getInt(byte[] data, long i) {
+            return UNSAFE.getInt(data, i);
+        }
+        public boolean isLittleEndian() {
+            return !BIG_ENDIAN;
+        }
+        @Override
+        public long byteArrayBaseOffset() {
+            return arrayBaseOffset();
+        }
+        @Override
+        public byte getByte(byte[] data, int i) {
+            return data[i];
+        }
+    };
+    private static final Murmur3 MURMUR3_UNSAFE = new Murmur3(UNSAFE_ACCESSOR);
 
     /**
      * Limits the number of bytes to copy per {@link Unsafe#copyMemory(long, long, long)} to allow safepoint polling
@@ -347,6 +369,18 @@ final class PlatformDependent0 {
                    (remainingBytes == 2 || bytes1[startPos1 + 2] == bytes2[startPos2 + 2]);
         }
         return bytes1[startPos1] == bytes2[startPos2];
+    }
+
+    static int hashCode(byte[] bytes, int startPos, int endPos, int seed) {
+        return MURMUR3_UNSAFE.hashCode(bytes, startPos, endPos - startPos, seed);
+    }
+
+    public static HashCodeGenerator newHashCodeGenerator(NativeTypeTranslator translator) {
+        return new Murmur3(new ByteArrayAccessorDelegator(UNSAFE_ACCESSOR, translator));
+    }
+
+    public static HashCodeGenerator hashCodeGenerator() {
+        return MURMUR3_UNSAFE;
     }
 
     static <U, W> AtomicReferenceFieldUpdater<U, W> newAtomicReferenceFieldUpdater(
